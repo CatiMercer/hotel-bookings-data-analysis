@@ -1,0 +1,363 @@
+---
+title: "Per què el City Hotel cancel·la més que el Resort Hotel?"
+subtitle: "Una anàlisi visual de les reserves hoteleres a Portugal (2015–2017)"
+author: ""
+date: ""
+output: html_document
+---
+
+
+<div>
+<p style = 'text-align:center;'>
+![](hotel.webp){width='400px'}
+</p>
+</div>
+
+Les cancel·lacions són un dels principals problemes en la gestió hotelera, ja que afecten tant els ingressos com la planificació de recursos. En aquest projecte s’analitzen reserves reals fetes entre 2015 i 2017 en dos hotels de Portugal: un hotel urbà a Lisboa (City Hotel) i un hotel vacacional a l'Algarve (Resort Hotel).
+
+L’objectiu de la visualització és entendre per què el City Hotel presenta una taxa de cancel·lació més elevada que el Resort Hotel, i quins factors poden explicar aquesta diferència.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+library(scales)
+library(plotly)
+library(ggplot2)
+library(dplyr)
+library(countrycode)
+library(ggridges)
+library(ggalluvial)
+library(DT)
+```
+
+```{r load-clean, echo=FALSE}
+# Carrega de dades
+data = read.csv("hotel_bookings.csv", stringsAsFactors = T)
+
+# Nateja adults >10, nins i bebes > 5
+data = filter(data, adults < 10 & children < 5 & babies < 5)
+
+# Nateja adr
+data = filter(data, adr > 0 & adr<1000)
+
+# Eliminam Estancia = 0 dies
+data = filter(data, stays_in_week_nights > 0 & stays_in_weekend_nights > 0)
+
+# Eliminam esatdes sense hostes
+data = filter(data, (adults + children + babies) > 0)
+
+# Reemplaç Children NAs -> 0
+data = mutate(data, children = ifelse(is.na(children), 0, children))
+
+hotel_colors = c("City Hotel" = "#74C476", "Resort Hotel" = "#C77DFF" )
+
+```
+
+
+## El conjunt de dades
+
+El conjunt de dades conté més de 119.000 reserves reals, amb informació sobre dates d’arribada, durada de l’estada, preu, tipus de dipòsit, país d’origen i si la reserva va ser cancel·lada o no.
+
+Aquesta taula permet situar-nos: tot i que els dos hotels tenen volums diferents de reserves, ja s’observa una diferència clara en la proporció de cancel·lacions.
+
+
+```{r echo=FALSE}
+taula = group_by(data, hotel)
+taula = summarise(taula, Reserves = n(),
+                  `Percentatge cancel·lades` = percent(mean(is_canceled == 1), accuracy = 1),
+                  .groups = "drop")
+
+datatable(taula)
+```
+
+## Un primer contrast: City Hotel vs. Resort Hotel
+
+Com a primer pas, comparem directament la taxa de cancel·lació entre el City Hotel i el Resort Hotel. Aquest contrast inicial serveix per confirmar si realment existeix una diferència  significativa abans d’analitzar altres factors.
+
+
+```{r echo=FALSE}
+cph = group_by(data, hotel) 
+cph = summarise(cph, reserves = n(), cancel_rate = mean(is_canceled == 1),
+                adr_mitja = mean(adr), .groups = "drop" )
+
+p1 = ggplot(cph, aes(hotel, cancel_rate, fill = hotel,
+                      text = paste0("Reserves: ", comma(reserves),
+                                    "<br>Cancel·lació: ", percent(cancel_rate, 0.1),
+                                    "<br>ADR mitjà: ", round(adr_mitja, 1)))) +
+  geom_col() +
+  scale_fill_manual(values = hotel_colors) +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(title = "El City Hotel cancel·la més?", x = NULL, y = "% cancel·lades") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+ggplotly(p1, tooltip = "text")
+```
+
+El City Hotel presenta una taxa de cancel·lació notablement superior al Resort Hotel. Aquest resultat és el punt de partida de la història que es desenvolupa a continuació.
+
+## Tipus de dipòsit i cancel·lació
+
+Una possible explicació de les cancel·lacions és el compromís econòmic associat a la reserva. El tipus de dipòsit pot influir en la decisió de cancel·lar, ja que determina si el client pot recuperar els diners en cas de canvi de plans.
+
+```{r echo=FALSE}
+dep = group_by(data, hotel, deposit_type) 
+dep =  summarise(dep, reserves = n(), cancel_rate = mean(is_canceled == 1), .groups = "drop")
+dep = filter(dep, reserves >= 100)
+
+p6 = ggplot(dep, aes(reorder(deposit_type, cancel_rate), cancel_rate, fill = hotel,
+                      text = paste0("Hotel: ", hotel,
+                                    "<br>Dipòsit: ", deposit_type,
+                                    "<br>Reserves: ", comma(reserves),
+                                    "<br>Cancel·lació: ", percent(cancel_rate, 0.1)))) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = hotel_colors) +
+  coord_flip() +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(title = "Dipòsit i cancel·lació (comparació per hotel)", x = NULL, y = "% cancel·lades") +
+  theme_minimal()
+
+ggplotly(p6, tooltip = "text")
+```
+
+Les reserves “Non Refund” mostren una taxa de cancel·lació elevada. Això és contraintuïtiu i suggereix que el dipòsit, per si sol, no explica el comportament: probablement hi intervenen altres factors (canal de reserva, antelació, perfil del client o polítiques internes de l’hotel).
+
+## Quan es cancel·len les reserves?
+
+Per aprofundir en aquesta diferència, s’analitza com evoluciona la taxa de cancel·lació al llarg del temps i segons l’antelació amb què es fan les reserves. L’objectiu és identificar si els patrons temporals i el comportament de planificació dels clients influeixen en les cancel·lacions.
+
+```{r echo=FALSE}
+data$arrival_date_month = factor(data$arrival_date_month,
+  levels = c("January","February","March","April","May","June",
+    "July","August","September","October","November","December"))
+
+month = group_by(data, arrival_date_month, hotel)
+month = summarise(month, reserves = n(),
+            cancel_rate = mean(is_canceled == 1, na.rm = TRUE),
+            .groups = "drop")
+
+p2 = ggplot(month, aes( x= arrival_date_month, y = cancel_rate, color = hotel, group = hotel,
+                          text = paste0("Mes: ", arrival_date_month,
+                                        "<br>Hotel: ", hotel,
+                                        "<br>Reserves: ", comma(reserves),
+                                        "<br>Cancel·lació: ", percent(cancel_rate, 0.1)))) +
+  geom_line(linewidth = 1) +
+  scale_color_manual(values = hotel_colors) +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(title = "Evolució mensual de la taxa de cancel·lació", x = NULL, y = "% cancel·lades") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplotly(p2, tooltip = "text")
+```
+
+
+
+
+## L'origen dels clients és rellevant
+
+Les cancel·lacions no només depenen del moment o del preu, sinó també del perfil dels clients. El mapa següent mostra la taxa de cancel·lació per país d’origen, permetent comparar visualment les diferències entre el City Hotel i el Resort Hotel.
+
+
+```{r echo=FALSE}
+map_df = mutate(data, iso3 = toupper(trimws(as.character(country)))) 
+map_df = filter(map_df, !iso3 %in% c("NULL","TMP","CN")) 
+map_df = group_by(map_df, iso3, hotel) 
+map_df = summarise(map_df, reserves = n(), cancel_rate = mean(is_canceled == 1), .groups = "drop") 
+map_df = mutate(map_df, country_name = countrycode(iso3, "iso3c", "country.name"))
+
+city = filter(map_df,  hotel == "City Hotel")
+resort = filter(map_df, hotel == "Resort Hotel")
+
+
+fig = plot_ly(type = "choropleth",
+  locationmode = "ISO-3",
+  locations = city$iso3,
+  z = city$cancel_rate,
+  text = paste0(
+    "Hotel: City Hotel",
+    "<br>País: ", city$iso3,
+    "<br>Reserves: ", city$reserves,
+    "<br>Cancel·lació: ", round(city$cancel_rate * 100, 1), "%"
+  ),
+  colorscale = "Reds",
+  zmin = 0,
+  zmax = 1
+)
+
+# Afegim el selector
+fig = layout(fig,
+    title = paste0("Taxa de cancel·lació per país"),
+    geo = list(showframe = FALSE, projection = list(type = "natural earth")),
+    updatemenus = list(list(type = "buttons",
+        direction = "right",
+        x = 0.1, y = 1.1,
+        buttons = list(list(method = "restyle",
+            args = list(list(locations = list(city$iso3),
+                z = list(city$cancel_rate),
+                text = list(paste0(
+                  "Hotel: City Hotel",
+                  "<br>País: ", city$iso3,
+                  "<br>Reserves: ", city$reserves,
+                  "<br>Cancel·lació: ", round(city$cancel_rate * 100, 1), "%"
+                )))),
+            label = "City Hotel"),
+          list(method = "restyle",
+            args = list(
+              list(locations = list(resort$iso3),
+                z = list(resort$cancel_rate),
+                text = list(paste0(
+                  "Hotel: Resort Hotel",
+                  "<br>País: ", resort$iso3,
+                  "<br>Reserves: ", resort$reserves,
+                  "<br>Cancel·lació: ", round(resort$cancel_rate * 100, 1), "%"
+                )))),
+            label = "Resort Hotel"))
+      )
+    )
+  )
+
+fig
+```
+
+S’observa que els patrons de cancel·lació varien notablement segons el país i el tipus d’hotel, suggerint diferències en el tipus de viatge i en les expectatives dels clients.
+
+
+## Antelació, preu i volum
+
+Per entendre millor com interactuen diversos factors, s’utilitza un gràfic de bombolles que combina l’antelació de la reserva, el preu mitjà i el volum de reserves. La mida de la bombolla representa el nombre de reserves, mentre que la posició indica l’antelació i el preu mitjà.
+
+```{r echo=FALSE, warning=FALSE}
+bubble = filter(data, !is.na(lead_time), !is.na(adr), adr > 0) 
+bubble = mutate(bubble, lead_bin = cut(
+      lead_time,
+      breaks = c(0, 7, 30, 90, 180, 365, Inf),
+      labels = c("0-7","8-30","31-90","91-180","181-365","365+"),
+      include.lowest = TRUE))
+bubble = filter(bubble, !is.na(lead_bin)) 
+bubble = group_by(bubble, hotel, lead_bin)
+bubble = summarise(bubble, reserves = n(), adr_median = median(adr),
+    cancel_rate = mean(is_canceled == 1),
+    .groups = "drop")
+
+
+b_city = filter(bubble, hotel == "City Hotel")
+b_resort = filter(bubble, hotel == "Resort Hotel")
+
+bubble = mutate(bubble,
+    reserves = as.numeric(reserves),
+    adr_median = as.numeric(adr_median),
+    cancel_rate = as.numeric(cancel_rate),
+    lead_bin = as.character(lead_bin))
+
+plot_ly() %>%
+  add_trace(
+    data = b_city,
+    type = "scatter",
+    mode = "markers",
+    x = ~lead_bin,
+    y = ~adr_median,
+    marker = list(
+      size = ~reserves,
+      sizemode = "area",
+      sizeref = max(bubble$reserves) / 60,
+      color = ~cancel_rate,
+      colorscale = list(
+        c(0, "#f2e5ff"),
+        c(1, "#6a00f4")
+      )
+    ),
+    text = ~paste0(
+      "Hotel: City Hotel",
+      "<br>Antelació: ", lead_bin,
+      "<br>Reserves: ", scales::comma(reserves),
+      "<br>ADR mediana: ", round(adr_median, 1),
+      "<br>Cancel·lació: ", scales::percent(cancel_rate, 0.1)
+    ),
+    hoverinfo = "text",
+    name = "City Hotel"
+  ) %>%
+  add_trace(
+    data = b_resort,
+    type = "scatter",
+    mode = "markers",
+    x = ~lead_bin,
+    y = ~adr_median,
+    marker = list(
+      size = ~reserves,
+      sizemode = "area",
+      sizeref = max(bubble$reserves) /100,
+      color = ~cancel_rate,
+      colorscale = list(
+        c(0, "#e5f5e0"),
+        c(1, "#2ca25f")
+      )
+    ),
+    text = ~paste0(
+      "Hotel: Resort Hotel",
+      "<br>Antelació: ", lead_bin,
+      "<br>Reserves: ", scales::comma(reserves),
+      "<br>ADR mediana: ", round(adr_median, 1),
+      "<br>Cancel·lació: ", scales::percent(cancel_rate, 0.1)
+    ),
+    hoverinfo = "text",
+    name = "Resort Hotel"
+  ) %>%
+  layout(
+    title = "Antelació i preu: on es concentren les cancel·lacions?",
+    xaxis = list(
+      title = "Antelació de la reserva",
+      categoryorder = "array",
+      categoryarray = c("0-7","8-30","31-90","91-180","181-365","365+")
+    ),
+    yaxis = list(title = "ADR (mediana)")
+  )
+
+```
+
+Les cancel·lacions no només són més freqüents en reserves fetes amb molta antelació,
+sinó que també afecten un volum important de reserves, especialment en el City Hotel.
+
+## Patrons de cancel·lació
+
+El següent heatmap sintetitza els patrons de cancel·lació segons l’antelació de la
+reserva i el tipus d’hotel.
+
+
+```{r echo=FALSE}
+heat = filter(data, !is.na(lead_time)) 
+heat = mutate(heat, lead_bin = cut(lead_time,
+        breaks = c(0, 7, 30, 90, 180, 365, Inf),
+        labels = c("0–7","8–30","31–90","91–180","181–365","365+"),
+        include.lowest = TRUE)) 
+heat = filter(heat, !is.na(lead_bin)) 
+heat = group_by(heat, hotel, lead_bin) 
+heat = summarise(heat, cancel_rate = mean(is_canceled == 1), reserves = n(),
+    .groups = "drop")
+
+ggplot(heat, aes(x = lead_bin, y = hotel, fill = cancel_rate)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "#e5f5e0", high = "#C77DFF",  
+    labels = percent_format(accuracy = 1)) +
+  labs(
+    title = "Taxa de cancel·lació segons antelació i tipus d’hotel",
+    x = "Antelació de la reserva (dies)",
+    y = NULL,
+    fill = "% cancel·lades") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank()
+  )
+```
+
+En ambdós hotels, la probabilitat de cancel·lació augmenta amb l’antelació, però aquest efecte és molt més intens en el City Hotel.
+
+## Conclusions
+
+L’anàlisi mostra que les cancel·lacions no són aleatòries, sinó el resultat de la combinació de diversos factors: tipus d’hotel, antelació de la reserva, preu i origen dels clients.
+
+El City Hotel presenta un comportament més flexible i menys previsible, amb reserves fetes amb més antelació i una major probabilitat de cancel·lació. En canvi, el Resort Hotel mostra un patró més estable i planificat.
+
