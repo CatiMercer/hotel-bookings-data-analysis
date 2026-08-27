@@ -28,15 +28,15 @@ Entre les variables analitzades es troben:
 
 ## 🔎 Metodologia
 
-El projecte segueix un procés d'anàlisi orientat a la visualització i l'storytelling:
+El projecte segueix un procés complet d'anàlisi de dades:
 
-1. **Càrrega i exploració inicial de les dades**
+1. **Exploració inicial del conjunt de dades**
 2. **Neteja i tractament de valors incoherents o absents**
-3. **Anàlisi exploratòria de les cancel·lacions**
-4. **Comparació entre City Hotel i Resort Hotel**
-5. **Anàlisi de variables relacionades amb la cancel·lació**
+3. **Preparació i transformació de variables**
+4. **Anàlisi exploratòria de dades (EDA)**
+5. **Anàlisi dels factors relacionats amb les cancel·lacions**
 6. **Creació de visualitzacions interactives**
-7. **Interpretació dels resultats i extracció de conclusions**
+7. **Storytelling i interpretació dels resultats**
 
 ## 📈 Visualitzacions
 
@@ -75,10 +75,11 @@ Aquests resultats mostren la utilitat de l'anàlisi exploratòria i la visualitz
 
 ## 📁 Estructura del repositori
 
-- `hotel_bookings_analysis.Rmd` — codi font de l'anàlisi
-- `index.html` — informe interactiu generat
-- `hotel_bookings.csv` — conjunt de dades utilitzat
-- `README.md` — documentació del projecte
+- `exploratory_analysis.Rmd` — neteja, preparació de les dades i anàlisi exploratòria.
+- `hotel_bookings_storytelling.Rmd` — codi font de l'anàlisi visual i storytelling.
+- `index.html` — informe interactiu publicat mitjançant GitHub Pages.
+- `hotel_bookings.csv` — conjunt de dades utilitzat.
+- `README.md` — documentació del projecte.
 
 ---
 
