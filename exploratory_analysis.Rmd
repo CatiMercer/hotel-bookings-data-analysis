@@ -1,0 +1,711 @@
+---
+title: "Hotel Bookings - Exploratory Data Analysis"
+author: "Catalina Mercer"
+date: "2025-12-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r warning=FALSE, include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(scales)
+library(plotly)
+library(ggplot2)
+library(dplyr)
+library(countrycode)
+
+library(maps)
+
+```
+
+```{r}
+# Carrega de dades
+data = read.csv("hotel_bookings.csv", stringsAsFactors = T)
+dim (data)
+
+names(data)
+
+# Nateja adults >10, nins i bebes > 5
+data = filter(data, adults < 10 & children < 5 & babies < 5)
+
+# Nateja adr
+data = filter(data, adr > 0 & adr<1000)
+
+# Eliminam Estancia = 0 dies
+data = filter(data, stays_in_week_nights > 0 & stays_in_weekend_nights > 0)
+
+# Eliminam esatdes sense hostes
+data = filter(data, (adults + children + babies) > 0)
+
+# Reemplaç Children NAs -> 0
+data = mutate(data, children = ifelse(is.na(children), 0, children))
+
+dim(data)
+```
+
+Després del procés de neteja, el conjunt de dades conté 60.097 registres.
+
+
+Llevam NAs i filtram per paisos amb més de 1.000 reserves
+```{r}
+cancel_country = group_by(data, country)
+cancel_country = summarise(cancel_country, n=n(), cancel_rate = mean(is_canceled == 1, na.rm=TRUE, .groups = "drop"))
+cancel_country = filter(cancel_country, !is.na(country), n>=1000)
+cancel_country = arrange(cancel_country, desc(cancel_rate))
+
+ggplot(cancel_country %>% slice_head(n = 25),
+       aes(x = reorder(country, cancel_rate), y = cancel_rate, fill = country)) +
+  geom_col() +
+  coord_flip() +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(
+    title = "Taxa de cancel·lació per país (Top 25)",
+    subtitle = "Només països amb ≥ 1000 reserves",
+    x = "País",
+    y = "% cancel·lacions"
+  ) +
+  theme_light() +
+  theme(
+    panel.grid.minor = element_blank(),
+    legend.position = "none",   
+    plot.title = element_text(face = "bold")
+  )
+```
+ 
+```{r}
+data$dia=as_date(paste0(data$arrival_date_year,'-',data$arrival_date_month,'-',data$arrival_date_day_of_month))
+
+cols_any <- c("2015"="red","2016"="green","2017"="blue")
+
+ggplot(data, aes(x = dia, color = factor(arrival_date_year))) +
+  geom_bar() +
+  scale_color_manual(values = cols_any) +
+  labs(
+    title = "Reserves per data d’arribada",
+    subtitle = "Colors per any",
+    x = "Data d’arribada",
+    y = "Nombre de reserves",
+    color = "Any"
+  ) +
+  theme_light() +
+  theme(
+    panel.grid.minor = element_blank()
+  )
+```
+
+```{r}
+ggplot(data, aes(x = dia, color = factor(arrival_date_year))) +
+  geom_bar() +
+  facet_wrap(~ hotel, ncol = 1, scales = "free_y") +
+  scale_color_manual(values = cols_any) +
+  labs(
+    title = "Reserves per data d’arribada, separat per tipus d’hotel",
+    x = "Data d’arribada",
+    y = "Nombre de reserves",
+    color = "Any"
+  ) +
+  theme_light() +
+  theme(
+    panel.grid.minor = element_blank(),
+    legend.position = "top"
+  )
+
+```
+
+```{r}
+top_countries = filter(data, !is.na(country))
+top_countries = count(top_countries, country, sort = TRUE)
+top_countries = slice_head(top_countries, n=8)
+top_countries = pull(top_countries, country)
+
+
+data_top = filter(data, country %in% top_countries)
+
+ggplot(data_top, aes(x = dia, color = factor(arrival_date_year))) +
+  geom_bar() +
+  facet_wrap(~ country, ncol = 2, scales = "free_y") +
+  scale_color_manual(values = cols_any) +
+  labs(
+    title = "Reserves per data d’arribada, separat per país (Top 8)",
+    subtitle = "Països amb més reserves",
+    x = "Data d’arribada",
+    y = "Nombre de reserves",
+    color = "Any"
+  ) +
+  theme_light() +
+  theme(
+    panel.grid.minor = element_blank(),
+    legend.position = "top"
+  )
+```
+
+```{r}
+data = mutate(data, dia_setmana = wday(dia, label = TRUE, week_start = 1))
+
+ggplot(data, aes(x = dia_setmana, fill = factor(arrival_date_year))) +
+  geom_bar(position = "dodge") +
+  facet_wrap(~ hotel, ncol = 1) +
+  scale_fill_manual(values = cols_any) +
+  labs(
+    title = "Reserves per dia de la setmana segons tipus d'hotel",
+    x = "Dia de la setmana",
+    y = "Nombre de reserves",
+    fill = "Any"
+  ) +
+  theme_light()
+
+```
+
+
+
+
+```{r}
+which.max(table(data$dia))
+```
+
+```{r}
+data$tipo=ifelse(data$stays_in_weekend_nights==0, "work",
+       ifelse(data$stays_in_week_nights==0, "weekend",
+       ifelse(data$stays_in_week_nights==1 & wday(data$dia)==6, "weekend",
+       ifelse(data$stays_in_week_nights==5 & 
+              (data$stays_in_weekend_nights==3 |
+               data$stays_in_weekend_nights==4), "package",
+       ifelse(data$stays_in_week_nights<=5 & 
+              data$stays_in_weekend_nights<3, "work+rest",
+       "rest")))))
+```
+
+Quin hotel cancela més?
+
+```{r}
+cph = group_by(data, hotel) 
+cph = summarise(cph, reserves = n(), cancel_rate = mean(is_canceled == 1),
+                adr_mitja = mean(adr), .groups = "drop" )
+
+p1 = ggplot(cph, aes(hotel, cancel_rate, fill = hotel,
+                      text = paste0("Reserves: ", comma(reserves),
+                                    "<br>Cancel·lació: ", percent(cancel_rate, 0.1),
+                                    "<br>ADR mitjà: ", round(adr_mitja, 1)))) +
+  geom_col() +
+  scale_fill_manual(values = hotel_colors) +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(title = "El City Hotel cancel·la més?", x = NULL, y = "% cancel·lades") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+ggplotly(p1, tooltip = "text")
+```
+
+
+```{r}
+data$arrival_date_month = factor(data$arrival_date_month,
+  levels = c("January","February","March","April","May","June",
+    "July","August","September","October","November","December"))
+
+month = group_by(data, arrival_date_month, hotel)
+month = summarise(month, reserves = n(),
+            cancel_rate = mean(is_canceled == 1, na.rm = TRUE),
+            .groups = "drop")
+
+p2 = ggplot(month, aes( x= arrival_date_month, y = cancel_rate, color = hotel, group = hotel,
+                          text = paste0("Mes: ", arrival_date_month,
+                                        "<br>Hotel: ", hotel,
+                                        "<br>Reserves: ", comma(reserves),
+                                        "<br>Cancel·lació: ", percent(cancel_rate, 0.1)))) +
+  geom_line(linewidth = 1) +
+  scale_color_manual(values = hotel_colors) +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(title = "Evolució mensual de la taxa de cancel·lació", x = NULL, y = "% cancel·lades") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplotly(p2, tooltip = "text")
+```
+
+Antelació reserva
+
+```{r}
+data$is_canceled = factor(data$is_canceled, levels = c(0,1)) 
+
+p3 = ggplot(data, aes(x = is_canceled, y = lead_time, fill = hotel)) +
+  geom_violin() +
+  geom_boxplot(width = 0.12, outlier.shape = NA, alpha = 0.6) +
+  coord_flip() +
+  facet_wrap(~hotel) +
+  labs(title = "Les cancel·lacions tenen més antelació?",
+       x = NULL, y = "Lead time (dies)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+ggplotly(p3)
+```
+
+```{r}
+p4 = ggplot(data, aes(x = is_canceled, y = lead_time, fill = hotel)) +
+  geom_boxplot(outlier.alpha = 0.2) +
+  scale_y_log10() +
+  facet_wrap(~hotel) +
+  labs(
+    title = "Les reserves cancel·lades tenen més antelació",
+    subtitle = "Escala logarítmica per reduir l'impacte d'outliers",
+    x = "Reserva cancel·lada",
+    y = "Lead time (dies, escala log)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+ggplotly(p4)
+```
+
+Reserves fetes el mateix dia = 0, escala logaritima tendeix a infinit.
+
+```{r}
+ggplot(filter(data, lead_time > 0), aes(x = is_canceled, y = lead_time, fill = hotel)) +
+  geom_boxplot(outlier.alpha = 0.2) +
+  scale_y_log10() +
+  facet_wrap(~hotel) +
+  labs(
+    title = "Les reserves cancel·lades tenen més antelació",
+    subtitle = "S'exclouen lead_time = 0 per aplicar escala logarítmica",
+    x = "Reserva cancel·lada",
+    y = "Lead time (dies, escala log)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.subtitle = element_text(size = 9, hjust = 0))
+
+
+```
+
+tipo de deposit, influeix??
+
+
+NON-REFOUND: pago total y no reembolsable
+NO DEPOSIT: Sin deposito
+
+REFUNDABLE: Reembolsable
+
+
+
+```{r}
+dep = group_by(data, hotel, deposit_type) 
+dep =  summarise(dep, reserves = n(), cancel_rate = mean(is_canceled == 1), .groups = "drop") 
+
+p6 = ggplot(dep, aes(reorder(deposit_type, cancel_rate), cancel_rate, fill = hotel,
+                      text = paste0("Hotel: ", hotel,
+                                    "<br>Dipòsit: ", deposit_type,
+                                    "<br>Reserves: ", comma(reserves),
+                                    "<br>Cancel·lació: ", percent(cancel_rate, 0.1)))) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(title = "Dipòsit i cancel·lació (comparació per hotel)", x = NULL, y = "% cancel·lades") +
+  theme_minimal()
+
+ggplotly(p6, tooltip = "text")
+```
+
+
+Totes o casi totes les no reembolsables es cancelen? Nombre de reserves per tipus.
+
+```{r}
+select(dep, hotel, deposit_type, reserves, cancel_rate)
+```
+
+Llevam categories amb poques reserves
+
+```{r}
+
+dep = group_by(data, hotel, deposit_type) 
+dep =  summarise(dep, reserves = n(), cancel_rate = mean(is_canceled == 1), .groups = "drop") 
+dep = filter(dep, reserves >= 100)
+
+p6 = ggplot(dep, aes(reorder(deposit_type, cancel_rate), cancel_rate, fill = hotel,
+                      text = paste0("Hotel: ", hotel,
+                                    "<br>Dipòsit: ", deposit_type,
+                                    "<br>Reserves: ", comma(reserves),
+                                    "<br>Cancel·lació: ", percent(cancel_rate, 0.1)))) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(title = "Dipòsit i cancel·lació (comparació per hotel)", x = NULL, y = "% cancel·lades") +
+  theme_minimal()
+
+ggplotly(p6, tooltip = "text")
+```
+
+
+Més cancelacions per tour operadors o per travel agents?
+
+```{r}
+seg = group_by(data, hotel, market_segment) 
+seg = summarise(seg, reserves = n(), cancel_rate = mean(is_canceled == 1),.groups = "drop") 
+seg = filter(seg, reserves >= 100)
+
+p5 = ggplot(seg, aes(reorder(market_segment, cancel_rate), cancel_rate, fill = hotel)) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(title = "Cancel·lació per segment", x = NULL, y = "% cancel·lades") +
+  theme_minimal()
+
+ggplotly(p5)
+```
+
+Analisis per pais
+
+```{r}
+country_cancel = filter(data, country %in% names(sort(table(country), decreasing = TRUE)[1:10]))
+country_cancel = group_by(country_cancel, country, hotel)
+country_cancel = summarise(country_cancel, cancel_rate = mean(is_canceled == 1), .groups = "drop")
+
+ggplot(country_cancel, aes(hotel, country, fill = cancel_rate)) +
+  geom_tile() +
+  scale_fill_gradient(low = "#e0f3f8", high = "#b30000",
+                      labels = percent_format()) +
+  labs(title = "Cancel·lació per país i tipus d’hotel",
+       fill = "% cancel·lades") +
+  theme_minimal()
+```
+
+```{r echo=FALSE}
+map_df = mutate(data, iso3 = toupper(trimws(as.character(country)))) 
+map_df = filter(map_df, !iso3 %in% c("NULL","TMP","CN")) 
+map_df = group_by(map_df, iso3) 
+map_df = summarise(map_df, reserves = n(), cancel_rate = mean(is_canceled == 1), .groups = "drop") 
+map_df = mutate(map_df, country_name = countrycode(iso3, "iso3c", "country.name"))
+
+
+plot_ly(map_df, type = "choropleth", locationmode = "ISO-3", locations = ~iso3, z = ~cancel_rate,
+  text = ~paste0("País: ", iso3,
+                 "<br>Reserves: ", reserves,
+                 "<br>Cancel·lació: ", round(cancel_rate*100,1), "%"),
+  colorscale = "Reds",
+  zmin = 0, zmax = 1) %>%
+  layout(
+    title = "Taxa de cancel·lació per país",
+    geo = list(showframe = FALSE, projection = list(type = "natural earth"))
+  )
+```
+
+
+```{r echo=FALSE}
+map_df = mutate(data, iso3 = toupper(trimws(as.character(country)))) 
+map_df = filter(map_df, !iso3 %in% c("NULL","TMP","CN")) 
+map_df = group_by(map_df, iso3, hotel) 
+map_df = summarise(map_df, reserves = n(), cancel_rate = mean(is_canceled == 1), .groups = "drop") 
+map_df = mutate(map_df, country_name = countrycode(iso3, "iso3c", "country.name"))
+```
+
+
+```{r echo=FALSE}
+city = filter(map_df,  hotel == "City Hotel")
+resort = filter(map_df, hotel == "Resort Hotel")
+
+plot_ly(city, type = "choropleth", locationmode = "ISO-3", locations = ~iso3, z = ~cancel_rate,
+  text = ~paste0("País: ", iso3,
+                 "<br>Reserves: ", reserves,
+                 "<br>Cancel·lació: ", round(cancel_rate*100,1), "%"),
+  colorscale = "Reds",
+  zmin = 0, zmax = 1) %>%
+  layout(
+    title = "Taxa de cancel·lació per país",
+    geo = list(showframe = FALSE, projection = list(type = "natural earth"))
+  )
+
+plot_ly(resort, type = "choropleth", locationmode = "ISO-3", locations = ~iso3, z = ~cancel_rate,
+  text = ~paste0("País: ", iso3,
+                 "<br>Reserves: ", reserves,
+                 "<br>Cancel·lació: ", round(cancel_rate*100,1), "%"),
+  colorscale = "Reds",
+  zmin = 0, zmax = 1) %>%
+  layout(
+    title = "Taxa de cancel·lació per país",
+    geo = list(showframe = FALSE, projection = list(type = "natural earth"))
+  )
+```
+
+```{r}
+map_df = mutate(data, iso3 = toupper(trimws(as.character(country)))) 
+map_df = filter(map_df, !iso3 %in% c("NULL","TMP","CN")) 
+map_df = group_by(map_df, iso3, hotel) 
+map_df = summarise(map_df, reserves = n(), cancel_rate = mean(is_canceled == 1), .groups = "drop") 
+map_df = mutate(map_df, country_name = countrycode(iso3, "iso3c", "country.name"))
+
+city = filter(map_df,  hotel == "City Hotel")
+resort = filter(map_df, hotel == "Resort Hotel")
+
+
+fig = plot_ly(type = "choropleth",
+  locationmode = "ISO-3",
+  locations = city$iso3,
+  z = city$cancel_rate,
+  text = paste0(
+    "Hotel: City Hotel",
+    "<br>País: ", city$iso3,
+    "<br>Reserves: ", city$reserves,
+    "<br>Cancel·lació: ", round(city$cancel_rate * 100, 1), "%"
+  ),
+  colorscale = "Reds",
+  zmin = 0,
+  zmax = 1
+)
+
+# Afegim el selector
+fig = layout(fig,
+    title = paste0("Taxa de cancel·lació per país"),
+    geo = list(showframe = FALSE, projection = list(type = "natural earth")),
+    updatemenus = list(list(type = "buttons",
+        direction = "right",
+        x = 0.1, y = 1.1,
+        buttons = list(list(method = "restyle",
+            args = list(list(locations = list(city$iso3),
+                z = list(city$cancel_rate),
+                text = list(paste0(
+                  "Hotel: City Hotel",
+                  "<br>País: ", city$iso3,
+                  "<br>Reserves: ", city$reserves,
+                  "<br>Cancel·lació: ", round(city$cancel_rate * 100, 1), "%"
+                )))),
+            label = "City Hotel"),
+          list(method = "restyle",
+            args = list(
+              list(locations = list(resort$iso3),
+                z = list(resort$cancel_rate),
+                text = list(paste0(
+                  "Hotel: Resort Hotel",
+                  "<br>País: ", resort$iso3,
+                  "<br>Reserves: ", resort$reserves,
+                  "<br>Cancel·lació: ", round(resort$cancel_rate * 100, 1), "%"
+                )))),
+            label = "Resort Hotel"))
+      )
+    )
+  )
+
+fig
+```
+
+
+```{r}
+bubble = filter(data, !is.na(lead_time), !is.na(adr), adr > 0) 
+bubble = mutate(bubble, lead_bin = cut(
+      lead_time,
+      breaks = c(0, 7, 30, 90, 180, 365, Inf),
+      labels = c("0-7","8-30","31-90","91-180","181-365","365+"),
+      include.lowest = TRUE)) 
+bubble = filter(bubble, !is.na(lead_bin)) 
+bubble = group_by(bubble, hotel, lead_bin) 
+bubble = summarise(bubble, reserves = n(),
+    adr_median = median(adr),
+    cancel_rate = mean(is_canceled == 1),
+    .groups = "drop")
+
+
+b_city = filter(bubble, hotel == "City Hotel")
+b_resort = filter(bubble, hotel == "Resort Hotel")
+
+bubble = 
+  mutate(bubble, 
+    reserves = as.numeric(reserves),
+    adr_median = as.numeric(adr_median),
+    cancel_rate = as.numeric(cancel_rate),
+    lead_bin = as.character(lead_bin)  
+  )
+
+
+plot_ly() %>%
+  add_trace(
+    data = b_city,
+    type = "scatter",
+    mode = "markers",
+    x = ~lead_bin,
+    y = ~adr_median,
+    marker = list(
+      size = ~reserves,
+      sizemode = "area",
+      sizeref = max(bubble$reserves) / 60,
+      color = ~cancel_rate,
+      colorscale = list(
+        c(0, "#f2e5ff"),
+        c(1, "#6a00f4")
+      )
+    ),
+    text = ~paste0(
+      "Hotel: City Hotel",
+      "<br>Antelació: ", lead_bin,
+      "<br>Reserves: ", scales::comma(reserves),
+      "<br>ADR mediana: ", round(adr_median, 1),
+      "<br>Cancel·lació: ", scales::percent(cancel_rate, 0.1)
+    ),
+    hoverinfo = "text",
+    name = "City Hotel"
+  ) %>%
+  add_trace(
+    data = b_resort,
+    type = "scatter",
+    mode = "markers",
+    x = ~lead_bin,
+    y = ~adr_median,
+    marker = list(
+      size = ~reserves,
+      sizemode = "area",
+      sizeref = max(bubble$reserves) /10,
+      color = ~cancel_rate,
+      colorscale = list(
+        c(0, "#e5f5e0"),
+        c(1, "#2ca25f")
+      )
+    ),
+    text = ~paste0(
+      "Hotel: Resort Hotel",
+      "<br>Antelació: ", lead_bin,
+      "<br>Reserves: ", scales::comma(reserves),
+      "<br>ADR mediana: ", round(adr_median, 1),
+      "<br>Cancel·lació: ", scales::percent(cancel_rate, 0.1)
+    ),
+    hoverinfo = "text",
+    name = "Resort Hotel"
+  ) %>%
+  layout(
+    title = "Antelació i preu: on es concentren les cancel·lacions?",
+    xaxis = list(
+      title = "Antelació de la reserva",
+      categoryorder = "array",
+      categoryarray = c("0-7","8-30","31-90","91-180","181-365","365+")
+    ),
+    yaxis = list(title = "ADR (mediana)")
+  )
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+**Hipòtesi: com més antelació més probabilitat de canviar de plans.**
+
+
+```{r echo=FALSE}
+ggplot(filter(data, lead_time > 0), aes(x = is_canceled, y = lead_time, fill = hotel)) +
+  geom_boxplot(outlier.alpha = 0.2) +
+  scale_fill_manual(values = hotel_colors) +
+  scale_y_log10() +
+  facet_wrap(~hotel) +
+  labs(
+    title = "Les reserves cancel·lades tenen més antelació",
+    subtitle = "S'exclouen lead_time = 0 per aplicar escala logarítmica",
+    x = "Reserva cancel·lada",
+    y = "Lead time (dies, escala log)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.subtitle = element_text(size = 9, hjust = 0))
+```
+
+
+
+```{r echo=FALSE}
+data$dia=as_date(paste0(data$arrival_date_year,'-',data$arrival_date_month,'-',data$arrival_date_day_of_month))
+
+
+df = mutate(data, month = format(floor_date(dia, "month"), "%Y-%m")  ) %>%
+df = group_by(df, month, hotel) 
+df = summarise(df, cancel_rate = mean(is_canceled == 1), reserves = n(), .groups="drop")
+
+months = sort(unique(df$month))
+
+fig = plot_ly()
+
+for (m in months) {
+  d_m <- df %>% filter(month == m)
+  fig <- fig %>% add_trace(
+    data = d_m,
+    type = "bar",
+    x = ~hotel,
+    y = ~cancel_rate,
+    name = m,
+    visible = (m == months[1]),
+    text = ~paste0("Mes: ", m,
+                   "<br>Hotel: ", hotel,
+                   "<br>Reserves: ", reserves,
+                   "<br>Cancel·lació: ", round(cancel_rate*100,1), "%"),
+    hoverinfo = "text"
+  )
+}
+
+steps = lapply(seq_along(months), function(i) {
+  list(method = "update",
+       args = list(list(visible = as.list(seq_along(months) == i)),
+                   list(title = paste0("Taxa de cancel·lació per hotel — ", months[i]))),
+       label = months[i])
+})
+
+fig = layout(
+  title = paste0("Taxa de cancel·lació per hotel — ", months[1]),
+  yaxis = list(tickformat = ".0%"),
+  sliders = list(list(active = 0, steps = steps))
+)
+
+```
+
+
+**La politica de deposit pot canviar el comportament de les cancelacions**
+
+
+
+```{r echo=FALSE}
+dep = group_by(data, hotel, deposit_type) 
+dep =  summarise(dep, reserves = n(), cancel_rate = mean(is_canceled == 1), .groups = "drop")
+dep = filter(dep, reserves >= 100)
+
+p6 = ggplot(dep, aes(reorder(deposit_type, cancel_rate), cancel_rate, fill = hotel,
+                      text = paste0("Hotel: ", hotel,
+                                    "<br>Dipòsit: ", deposit_type,
+                                    "<br>Reserves: ", comma(reserves),
+                                    "<br>Cancel·lació: ", percent(cancel_rate, 0.1)))) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = hotel_colors) +
+  coord_flip() +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(title = "Dipòsit i cancel·lació (comparació per hotel)", x = NULL, y = "% cancel·lades") +
+  theme_minimal()
+
+ggplotly(p6, tooltip = "text")
+```
+
+**Es cancel·la més segons el tipus de reserva?**
+
+```{r echo=FALSE}
+seg = group_by(data, hotel, market_segment) 
+seg = summarise(seg, reserves = n(), cancel_rate = mean(is_canceled == 1),.groups = "drop") 
+seg = filter(seg, reserves >= 100)
+
+p5 = ggplot(seg, aes(x= reorder(market_segment, cancel_rate), y = cancel_rate, fill = hotel,
+  text = paste0(
+    "Segment: ", market_segment,
+    "<br>Hotel: ", hotel,
+    "<br>Cancel·lació: ", scales::percent(cancel_rate, 0.1)
+  ))) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = hotel_colors) +
+  coord_flip() +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(title = "Cancel·lació per segment", x = NULL, y = "% cancel·lades") +
+  theme_minimal()
+
+ggplotly(p5, tooltip = "text")
+```
+
